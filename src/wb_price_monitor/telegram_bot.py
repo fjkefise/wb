@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from src.wb_price_monitor.monitor_manager import MonitorManager
 from src.wb_price_monitor.config import load_config
+from src.wb_price_monitor.telegram_http import telegram_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class TelegramBotController:
         self.default_chat_id = self.chat_ids[0] if self.chat_ids else None
         self.manager = MonitorManager(config_path)
         self.base_url = f'https://api.telegram.org/bot{self.token}'
+        self.proxies = telegram_proxies()
         self._offset = 0
         self._user_states: Dict[int, Dict] = {}  # user_id -> state
 
@@ -48,7 +50,7 @@ class TelegramBotController:
             data['reply_markup'] = json.dumps(reply_markup)
         for attempt in range(1, 4):
             try:
-                resp = requests.post(f'{self.base_url}/sendMessage', data=data, timeout=15)
+                resp = requests.post(f'{self.base_url}/sendMessage', data=data, timeout=15, proxies=self.proxies)
                 if resp.status_code == 200:
                     return True
                 logger.warning('Failed to send Telegram message: %s %s', resp.status_code, resp.text)
@@ -75,7 +77,7 @@ class TelegramBotController:
             if reply_markup:
                 import json
                 data['reply_markup'] = json.dumps(reply_markup)
-            resp = requests.post(f'{self.base_url}/editMessageText', data=data, timeout=10)
+            resp = requests.post(f'{self.base_url}/editMessageText', data=data, timeout=10, proxies=self.proxies)
             return resp.status_code == 200
         except requests.RequestException as e:
             logger.warning('Failed to edit Telegram message: %s', type(e).__name__)
@@ -92,7 +94,7 @@ class TelegramBotController:
                 'text': text,
                 'show_alert': show_alert
             }
-            resp = requests.post(f'{self.base_url}/answerCallbackQuery', data=data, timeout=10)
+            resp = requests.post(f'{self.base_url}/answerCallbackQuery', data=data, timeout=10, proxies=self.proxies)
             return resp.status_code == 200
         except requests.RequestException as e:
             logger.warning('Failed to answer Telegram callback: %s', type(e).__name__)
@@ -397,7 +399,8 @@ WB backoff: {backoff}
             resp = requests.get(
                 f'{self.base_url}/getUpdates',
                 params={'offset': self._offset, 'timeout': 30},
-                timeout=35
+                timeout=35,
+                proxies=self.proxies,
             )
             data = resp.json()
             if data.get('ok'):
@@ -411,6 +414,8 @@ WB backoff: {backoff}
     def run(self):
         """Start bot long polling loop"""
         logger.info(f'Starting Telegram bot (chat_ids: {self.chat_ids})')
+        if self.proxies:
+            logger.info('Telegram proxy is enabled')
         logger.info('Send /start to the bot to open controls')
 
         while True:
