@@ -1,0 +1,137 @@
+interval_seconds: 900
+cycle_jitter_seconds: 300
+request_delay_seconds: 10.0
+request_jitter_seconds: 10.0
+search_pages: 1
+search_sorts:
+  - priceup
+models_per_cycle: 0
+wb_cooldown_after_429_seconds: 2700
+manual_check_cooldown_seconds: 1800
+max_requests_per_cycle: 25
+max_requests_per_hour: 80
+
+telegram:
+  bot_token_env: TELEGRAM_BOT_TOKEN
+  chat_id_env: TELEGRAM_CHAT_ID
+
+models:
+  station_light_2_clock:
+    name: "Яндекс Станция Лайт 2 с часами"
+    queries:
+      - "Яндекс Станция Лайт 2 с часами"
+    interesting_price: 3750
+    max_reasonable_price: 3750
+    sharp_drop_from_previous_pct: 12
+    drop_from_24h_median_pct: 18
+    drop_from_7d_median_pct: 22
+
+  station_light_2:
+    name: "Яндекс Станция Лайт 2 без часов"
+    queries:
+      - "Яндекс Станция Лайт 2"
+    interesting_price: 3350
+    max_reasonable_price: 3350
+    sharp_drop_from_previous_pct: 15
+    drop_from_24h_median_pct: 20
+    drop_from_7d_median_pct: 25
+
+  station_3:
+    name: "Яндекс Станция 3"
+    queries:
+      - "Яндекс Станция 3"
+    interesting_price: 16550
+    max_reasonable_price: 16550
+    sharp_drop_from_previous_pct: 12
+    drop_from_24h_median_pct: 18
+    drop_from_7d_median_pct: 22
+
+  station_mini_3:
+    name: "Яндекс Станция Мини 3"
+    queries:
+      - "Яндекс Станция Мини 3"
+    interesting_price: 5650
+    max_reasonable_price: 5650
+    sharp_drop_from_previous_pct: 15
+    drop_from_24h_median_pct: 20
+    drop_from_7d_median_pct: 25
+
+  station_mini_3_pro:
+    name: "Яндекс Станция Мини 3 Про"
+    queries:
+      - "Яндекс Станция Мини 3 Про"
+    interesting_price: 7550
+    max_reasonable_price: 7550
+    sharp_drop_from_previous_pct: 12
+    drop_from_24h_median_pct: 18
+    drop_from_7d_median_pct: 22
+
+  station_midi:
+    name: "Яндекс Станция Миди"
+    queries:
+      - "Яндекс Станция Миди"
+    interesting_price: 9850
+    max_reasonable_price: 9850
+    sharp_drop_from_previous_pct: 15
+    drop_from_24h_median_pct: 20
+    drop_from_7d_median_pct: 25
+
+  station_duo_max:
+    name: "Яндекс Станция Дуо Макс"
+    queries:
+      - "Яндекс Станция Дуо Макс"
+    interesting_price: 31850
+    max_reasonable_price: 31850
+    sharp_drop_from_previous_pct: 10
+    drop_from_24h_median_pct: 15
+    drop_from_7d_median_pct: 20
+
+  iphone_17e:
+    name: "Apple iPhone 17e"
+    queries:
+      - "iPhone 17e"
+    interesting_price: 45000
+    max_reasonable_price: 45000
+    sharp_drop_from_previous_pct: 12
+    drop_from_24h_median_pct: 18
+    drop_from_7d_median_pct: 22
+
+  iphone_17:
+    name: "Apple iPhone 17"
+    queries:
+      - "iPhone 17"
+    interesting_price: 60000
+    max_reasonable_price: 60000
+    sharp_drop_from_previous_pct: 12
+    drop_from_24h_median_pct: 18
+    drop_from_7d_median_pct: 22
+
+  iphone_air:
+    name: "Apple iPhone Air"
+    queries:
+      - "iPhone Air"
+    interesting_price: 80000
+    max_reasonable_price: 80000
+    sharp_drop_from_previous_pct: 12
+    drop_from_24h_median_pct: 18
+    drop_from_7d_median_pct: 22
+
+  iphone_17_pro:
+    name: "Apple iPhone 17 Pro"
+    queries:
+      - "iPhone 17 Pro"
+    interesting_price: 115000
+    max_reasonable_price: 115000
+    sharp_drop_from_previous_pct: 10
+    drop_from_24h_median_pct: 15
+    drop_from_7d_median_pct: 20
+
+  iphone_17_pro_max:
+    name: "Apple iPhone 17 Pro Max"
+    queries:
+      - "iPhone 17 Pro Max"
+    interesting_price: 125000
+    max_reasonable_price: 125000
+    sharp_drop_from_previous_pct: 10
+    drop_from_24h_median_pct: 15
+    drop_from_7d_median_pct: 20

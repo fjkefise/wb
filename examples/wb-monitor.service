@@ -1,0 +1,16 @@
+[Unit]
+Description=WB Price Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=wb-monitor
+WorkingDirectory=/opt/wb-price-monitor
+ExecStart=/opt/wb-price-monitor/.venv/bin/python main.py monitor
+Restart=on-failure
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
