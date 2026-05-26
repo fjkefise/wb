@@ -26,11 +26,16 @@ class Monitor:
         self.interval = int(self.cfg.get('interval_seconds', 3600))
         self.cycle_jitter = int(self.cfg.get('cycle_jitter_seconds', 0))
         self.search_pages = int(self.cfg.get('search_pages', 1))
+        self.discovery_interval = int(self.cfg.get('discovery_interval_seconds', 12 * 3600))
+        self.monitor_interval = int(self.cfg.get('monitor_interval_seconds', self.interval))
+        self.monitor_jitter = int(self.cfg.get('monitor_jitter_seconds', self.cycle_jitter))
+        self.discovery_search_pages = int(self.cfg.get('discovery_search_pages', self.search_pages))
         self.search_sorts = self.cfg.get('search_sorts') or ['popular']
         self.models_per_cycle = int(self.cfg.get('models_per_cycle', 0) or 0)
         self.wb_cooldown_after_429 = int(self.cfg.get('wb_cooldown_after_429_seconds', 2700))
         self._wb_cooldown_until = 0
         self._model_cursor = 0
+        self._last_discovery_ts = 0
 
     def _is_accessory(self, name: str) -> bool:
         return is_accessory_name(name)
@@ -157,6 +162,20 @@ class Monitor:
                 break
         return products
 
+    def _discover_model_products(self, query):
+        products = []
+        seen = set()
+        for sort in self.search_sorts:
+            for prod in self.wb.search(query, pages=self.discovery_search_pages, sort=sort, max_price=None):
+                wb_id = prod.get('wb_id')
+                if not wb_id or wb_id in seen:
+                    continue
+                seen.add(wb_id)
+                products.append(prod)
+            if self.wb.is_backing_off():
+                break
+        return products
+
     @staticmethod
     def _is_below_model_threshold(prod, model_cfg):
         threshold = model_cfg.get('interesting_price')
@@ -184,7 +203,152 @@ class Monitor:
         self._model_cursor = (start + batch_size) % len(items)
         return batch
 
+    @staticmethod
+    def _base_stats(models_count=0):
+        return {
+            'queries': 0,
+            'total_models': models_count,
+            'checked_models': 0,
+            'raw_products': 0,
+            'below_price': 0,
+            'accessories_filtered': 0,
+            'matched_products': 0,
+            'evaluated_products': 0,
+            'tracked_products': 0,
+            'discovered_products': 0,
+            'rejected_below_price': [],
+            'rate_limited_queries': 0,
+            'failed_queries': 0,
+            'stopped_by_backoff': False,
+            'stopped_at_query': None,
+            'skipped_due_cooldown': False,
+            'cooldown_remaining_seconds': 0,
+        }
+
+    def _cooldown_stats(self, stats):
+        stats['skipped_due_cooldown'] = True
+        stats['cooldown_remaining_seconds'] = self._wb_cooldown_remaining()
+        stats['notifications'] = 0
+        logger.warning('Skip cycle: WB cooldown active for %s seconds', stats['cooldown_remaining_seconds'])
+        return stats
+
+    def run_discovery_once(self, model_keys=None):
+        self.wb.reset_cycle()
+        all_models = self.cfg.get('models', {})
+        models = {k: v for k, v in all_models.items() if not model_keys or k in model_keys}
+        stats = self._base_stats(len(models))
+        stats['notifications_before'] = self.db.count_notifications_since(0)
+        if self._is_wb_cooling_down():
+            return self._cooldown_stats(stats)
+
+        for model_key, model_cfg in models.items():
+            stats['checked_models'] += 1
+            for q in model_cfg.get('queries', []):
+                stats['queries'] += 1
+                prods = self._discover_model_products(q)
+                if self.wb.last_error == 'rate_limited':
+                    stats['rate_limited_queries'] += 1
+                    self._activate_wb_cooldown()
+                    stats['stopped_by_backoff'] = True
+                    stats['stopped_at_query'] = q
+                    stats['cooldown_remaining_seconds'] = self._wb_cooldown_remaining()
+                    stats['notifications'] = self.db.count_notifications_since(0) - stats['notifications_before']
+                    return stats
+                if self.wb.last_error:
+                    stats['failed_queries'] += 1
+                stats['raw_products'] += len(prods)
+
+                for p in prods:
+                    if self._is_accessory(p.get('name')):
+                        stats['accessories_filtered'] += 1
+                        continue
+                    if not match_product_to_model(p.get('name', ''), model_key):
+                        continue
+                    stats['matched_products'] += 1
+                    wb_id = p.get('wb_id')
+                    if not wb_id:
+                        continue
+                    self.db.track_product(wb_id, model_key, q)
+                    stats['tracked_products'] += 1
+                    stats['discovered_products'] += 1
+                    self.evaluate_product(p, model_key, model_cfg)
+                    stats['evaluated_products'] += 1
+
+        self._last_discovery_ts = int(time.time())
+        stats['notifications'] = self.db.count_notifications_since(0) - stats['notifications_before']
+        return stats
+
+    def run_tracked_once(self, model_keys=None):
+        self.wb.reset_cycle()
+        all_models = self.cfg.get('models', {})
+        tracked = self.db.tracked_products(model_keys=model_keys)
+        stats = self._base_stats(len(model_keys or all_models))
+        stats['tracked_products'] = len(tracked)
+        stats['notifications_before'] = self.db.count_notifications_since(0)
+        if self._is_wb_cooling_down():
+            return self._cooldown_stats(stats)
+        if not tracked:
+            stats['notifications'] = 0
+            return stats
+
+        by_id = {item['wb_id']: item for item in tracked}
+        products = self.wb.fetch_by_ids(by_id.keys(), query='tracked')
+        if self.wb.last_error == 'rate_limited':
+            stats['rate_limited_queries'] += 1
+            self._activate_wb_cooldown()
+            stats['stopped_by_backoff'] = True
+            stats['stopped_at_query'] = 'tracked products'
+            stats['cooldown_remaining_seconds'] = self._wb_cooldown_remaining()
+            stats['notifications'] = self.db.count_notifications_since(0) - stats['notifications_before']
+            return stats
+        if self.wb.last_error:
+            stats['failed_queries'] += 1
+
+        stats['raw_products'] = len(products)
+        seen_models = set()
+        for p in products:
+            tracked_item = by_id.get(p.get('wb_id'))
+            if not tracked_item:
+                continue
+            model_key = tracked_item.get('model_key')
+            model_cfg = all_models.get(model_key)
+            if not model_cfg:
+                continue
+            seen_models.add(model_key)
+            if self._is_accessory(p.get('name')):
+                stats['accessories_filtered'] += 1
+                continue
+            if not match_product_to_model(p.get('name', ''), model_key):
+                continue
+            stats['matched_products'] += 1
+            self.db.track_product(p.get('wb_id'), model_key, tracked_item.get('query'))
+            self.evaluate_product(p, model_key, model_cfg)
+            stats['evaluated_products'] += 1
+            if self._is_below_model_threshold(p, model_cfg):
+                stats['below_price'] += 1
+        stats['checked_models'] = len(seen_models)
+        stats['notifications'] = self.db.count_notifications_since(0) - stats['notifications_before']
+        return stats
+
     def run_once(self):
+        # Manual runs do both: refresh discovery, then immediately re-check the
+        # tracked set. Background monitoring uses these modes separately.
+        discovery = self.run_discovery_once()
+        tracked = self.run_tracked_once()
+        merged = dict(discovery)
+        for key in ('raw_products', 'below_price', 'accessories_filtered', 'matched_products',
+                    'evaluated_products', 'tracked_products', 'rate_limited_queries', 'failed_queries'):
+            merged[key] = discovery.get(key, 0) + tracked.get(key, 0)
+        merged['notifications'] = discovery.get('notifications', 0) + tracked.get('notifications', 0)
+        merged['stopped_by_backoff'] = discovery.get('stopped_by_backoff') or tracked.get('stopped_by_backoff')
+        merged['stopped_at_query'] = discovery.get('stopped_at_query') or tracked.get('stopped_at_query')
+        merged['cooldown_remaining_seconds'] = max(
+            discovery.get('cooldown_remaining_seconds', 0),
+            tracked.get('cooldown_remaining_seconds', 0),
+        )
+        return merged
+
+    def run_search_once_legacy(self):
         self.wb.reset_cycle()
         models = self.cfg.get('models', {})
         stats = {
@@ -281,15 +445,24 @@ class Monitor:
         })
 
     def monitor(self):
-        logger.info('Start monitor loop, interval %s seconds, jitter %s seconds', self.interval, self.cycle_jitter)
+        logger.info(
+            'Start monitor loop, tracked interval %s seconds, discovery interval %s seconds',
+            self.monitor_interval,
+            self.discovery_interval,
+        )
         while True:
             try:
-                self.run_once()
+                now = int(time.time())
+                if not self._last_discovery_ts or now - self._last_discovery_ts >= self.discovery_interval:
+                    logger.info('Starting discovery cycle')
+                    self.run_discovery_once()
+                logger.info('Starting tracked price cycle')
+                self.run_tracked_once()
             except Exception:
                 logger.exception('error in run_once')
-            delay = self.interval
-            if self.cycle_jitter > 0:
-                delay += random.randint(0, self.cycle_jitter)
+            delay = self.monitor_interval
+            if self.monitor_jitter > 0:
+                delay += random.randint(0, self.monitor_jitter)
             logger.info('Next monitor cycle in %s seconds', delay)
             time.sleep(delay)
 

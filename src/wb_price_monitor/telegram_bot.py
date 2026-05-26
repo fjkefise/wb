@@ -117,8 +117,8 @@ class TelegramBotController:
         }
 
     def _start_text(self, authorized: bool) -> str:
-        interval = int(self.config.get('interval_seconds', 900))
-        jitter = int(self.config.get('cycle_jitter_seconds', 0))
+        interval = int(self.config.get('monitor_interval_seconds', self.config.get('interval_seconds', 900)))
+        jitter = int(self.config.get('monitor_jitter_seconds', self.config.get('cycle_jitter_seconds', 0)))
         interval_text = f'{interval//60} мин'
         if jitter:
             interval_text += f' + до {jitter//60} мин случайно'

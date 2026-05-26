@@ -1,8 +1,12 @@
 interval_seconds: 900
 cycle_jitter_seconds: 300
+discovery_interval_seconds: 43200
+monitor_interval_seconds: 240
+monitor_jitter_seconds: 60
 request_delay_seconds: 10.0
 request_jitter_seconds: 10.0
 search_pages: 1
+discovery_search_pages: 4
 search_sorts:
   - priceup
 models_per_cycle: 0

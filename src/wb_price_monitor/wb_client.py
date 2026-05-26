@@ -1,4 +1,3 @@
-import os
 import time
 import random
 import logging
@@ -8,6 +7,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 SEARCH_API = 'https://search.wb.ru/exactmatch/ru/common/v18/search'
+DETAIL_API = 'https://card.wb.ru/cards/v2/detail'
 # Region used by WB for price calculation (Moscow).
 DEFAULT_DEST = -1257786
 
@@ -36,14 +36,10 @@ class WildberriesClient:
         backoff_after_errors=3,
     ):
         self.session = session or requests.Session()
-
-        self.proxy_url = os.environ.get('WB_PROXY_URL')
-        if self.proxy_url and hasattr(self.session, 'proxies'):
-            self.session.proxies.update({
-                'http': self.proxy_url,
-                'https': self.proxy_url,
-            })
-            logger.info('WB proxy is enabled')
+        if hasattr(self.session, 'trust_env'):
+            # WB traffic must go directly from the server IP. Telegram has its own
+            # explicit proxy path; global proxy env vars should not affect WB.
+            self.session.trust_env = False
 
         self.rate_limit_delay = rate_limit_delay
         self.jitter = jitter
@@ -229,6 +225,59 @@ class WildberriesClient:
 
         return products if isinstance(products, list) else []
 
+    def _request_detail(self, wb_ids):
+        self._throttle()
+        ids = [str(wb_id).strip() for wb_id in wb_ids if str(wb_id).strip()]
+        if not ids:
+            return []
+
+        params = {
+            'appType': 1,
+            'curr': 'rub',
+            'dest': self.dest,
+            'spp': 30,
+            'nm': ','.join(ids),
+        }
+        try:
+            resp = self.session.get(
+                DETAIL_API,
+                params=params,
+                headers=DEFAULT_HEADERS,
+                timeout=20,
+            )
+        except requests.RequestException:
+            logger.warning('WB detail request failed for %s ids', len(ids))
+            self._record_request_error('request_failed')
+            return []
+
+        if resp.status_code == 429:
+            retry = resp.headers.get('Retry-After')
+            logger.warning('WB detail 429 for %s ids; Retry-After=%s', len(ids), retry)
+            self._record_request_error('rate_limited', status_code=429, retry_after=retry)
+            return []
+        if resp.status_code >= 500:
+            logger.warning('WB detail returned %s for %s ids', resp.status_code, len(ids))
+            self._record_request_error('server_error', status_code=resp.status_code)
+            return []
+        if resp.status_code != 200:
+            self.last_error = 'bad_status'
+            self.last_status_code = resp.status_code
+            logger.warning('WB detail returned %s for %s ids', resp.status_code, len(ids))
+            return []
+
+        try:
+            data = resp.json()
+        except ValueError:
+            logger.warning('WB detail returned non-JSON for %s ids', len(ids))
+            return []
+
+        self._consecutive_errors = 0
+        self._blocked_until = 0
+        self.last_error = None
+        self.last_status_code = None
+        products = (data.get('data') or {}).get('products') or data.get('products') or []
+        return products if isinstance(products, list) else []
+
     @staticmethod
     def _kopecks_to_rub(value):
         if value is None:
@@ -343,4 +392,34 @@ class WildberriesClient:
         )
 
         self._cache[key] = results
+        return results
+
+    def fetch_by_ids(self, wb_ids, query='tracked', batch_size=80):
+        ids = [str(wb_id) for wb_id in wb_ids if wb_id]
+        results = []
+        seen = set()
+        for start in range(0, len(ids), max(1, int(batch_size))):
+            batch = ids[start:start + max(1, int(batch_size))]
+            try:
+                products = self._request_detail(batch)
+            except RuntimeError:
+                break
+            if not products:
+                if self.last_error:
+                    break
+                continue
+            for product in products:
+                if not isinstance(product, dict):
+                    continue
+                try:
+                    parsed = self._parse_product(product, query)
+                    wb_id = parsed.get('wb_id')
+                    if wb_id and wb_id not in seen:
+                        seen.add(wb_id)
+                        results.append(parsed)
+                except Exception:
+                    logger.exception('Error parsing WB detail product')
+            if self.is_backing_off():
+                break
+        logger.info('WB detail fetched %s/%s tracked products', len(results), len(ids))
         return results

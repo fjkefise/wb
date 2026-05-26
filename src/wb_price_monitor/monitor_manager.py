@@ -155,7 +155,10 @@ class MonitorManager:
 
     def _monitor_loop(self):
         """Background monitoring loop"""
-        interval = self.cfg.get('interval_seconds', 3600)
+        interval = int(self.cfg.get('monitor_interval_seconds', self.cfg.get('interval_seconds', 3600)))
+        jitter = int(self.cfg.get('monitor_jitter_seconds', 0))
+        discovery_interval = int(self.cfg.get('discovery_interval_seconds', 12 * 3600))
+        last_discovery_ts = 0
         while not self._stop_flag:
             try:
                 with self._lock:
@@ -164,10 +167,34 @@ class MonitorManager:
                     selected = self._selected_models.copy()
 
                 if selected:
-                    self.run_once_selected(selected)
+                    now = time.time()
+                    if not last_discovery_ts or now - last_discovery_ts >= discovery_interval:
+                        discovery = self.monitor.run_discovery_once(model_keys=selected)
+                        last_discovery_ts = time.time()
+                    else:
+                        discovery = {}
+                    tracked = self.monitor.run_tracked_once(model_keys=selected)
+                    results = dict(tracked)
+                    if discovery:
+                        for key in ('raw_products', 'below_price', 'accessories_filtered',
+                                    'matched_products', 'evaluated_products', 'tracked_products',
+                                    'rate_limited_queries', 'failed_queries', 'notifications'):
+                            results[key] = discovery.get(key, 0) + tracked.get(key, 0)
+                        results['stopped_by_backoff'] = (
+                            discovery.get('stopped_by_backoff') or tracked.get('stopped_by_backoff')
+                        )
+                        results['stopped_at_query'] = (
+                            discovery.get('stopped_at_query') or tracked.get('stopped_at_query')
+                        )
+                    self._last_run = datetime.now()
+                    self._last_cycle_results = results
 
                 # Sleep in small intervals to allow quick stopping
-                for _ in range(int(interval)):
+                delay = interval
+                if jitter:
+                    import random
+                    delay += random.randint(0, jitter)
+                for _ in range(int(delay)):
                     if self._stop_flag:
                         break
                     time.sleep(1)
@@ -184,7 +211,7 @@ class MonitorManager:
             return {
                 'running': self._running,
                 'models': self._selected_models.copy(),
-                'interval': self.cfg.get('interval_seconds', 3600),
+                'interval': self.cfg.get('monitor_interval_seconds', self.cfg.get('interval_seconds', 3600)),
                 'manual_cooldown_remaining': self._manual_cooldown_remaining(),
                 'last_run': self._last_run.isoformat() if self._last_run else None,
                 'cycle_results': self._last_cycle_results.copy()
@@ -209,7 +236,7 @@ class MonitorManager:
         """Count products found in last cycle"""
         try:
             now = int(time.time())
-            interval = self.cfg.get('interval_seconds', 3600)
+            interval = self.cfg.get('monitor_interval_seconds', self.cfg.get('interval_seconds', 3600))
             return self.monitor.db.count_snapshots_since(
                 now - interval,
                 model_keys=list(self.cfg.get('models', {}).keys()),
@@ -221,7 +248,7 @@ class MonitorManager:
         """Count notifications sent in last cycle"""
         try:
             now = int(time.time())
-            interval = self.cfg.get('interval_seconds', 3600)
+            interval = self.cfg.get('monitor_interval_seconds', self.cfg.get('interval_seconds', 3600))
             count = 0
             # Count recent notifications
             with self.monitor.db.conn() as c:

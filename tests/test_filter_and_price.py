@@ -49,3 +49,15 @@ def test_manager_counts_recent_products_by_model(monkeypatch, tmp_path):
     manager = MonitorManager()
     manager.monitor.db.add_snapshot('wb1', 1000, None, None, None, '', 'station_midi', 'q')
     assert manager._count_recent_products() == 1
+
+def test_tracked_products_are_saved_and_counted(monkeypatch, tmp_path):
+    db_path = tmp_path / 'test.sqlite3'
+    monkeypatch.setenv('WB_DB_PATH', str(db_path))
+    m = Monitor()
+
+    m.db.upsert_product('wb1', 'Яндекс Станция Миди', 'Яндекс', 'seller')
+    m.db.track_product('wb1', 'station_midi', 'Яндекс Станция Миди')
+
+    tracked = m.db.tracked_products(model_keys=['station_midi'])
+    assert m.db.count_tracked_products(['station_midi']) == 1
+    assert tracked[0]['wb_id'] == 'wb1'

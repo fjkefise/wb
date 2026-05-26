@@ -82,6 +82,7 @@ class FakeSession:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
+        self.trust_env = True
 
     def get(self, url, params=None, headers=None, timeout=None):
         self.calls.append(params.copy())
@@ -137,3 +138,28 @@ def test_repeated_429_activates_global_backoff():
         assert client.search(f'Яндекс Станция Миди {index}') == []
 
     assert client._blocked_until > 0
+
+
+def test_fetch_by_ids_uses_detail_endpoint_and_deduplicates():
+    session = FakeSession([
+        FakeResponse(payload={'data': {'products': [
+            {'id': 1, 'name': 'Яндекс Станция Миди'},
+            {'id': 1, 'name': 'Яндекс Станция Миди'},
+            {'id': 2, 'name': 'Яндекс Станция Лайт 2'},
+        ]}}),
+    ])
+    client = WildberriesClient(session=session, rate_limit_delay=0, jitter=0, max_requests=10)
+
+    results = client.fetch_by_ids(['1', '2'], batch_size=100)
+
+    assert [item['wb_id'] for item in results] == ['1', '2']
+    assert session.calls[0]['nm'] == '1,2'
+
+
+def test_wb_client_ignores_global_proxy_env(monkeypatch):
+    session = FakeSession([])
+    monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:9999')
+
+    WildberriesClient(session=session, rate_limit_delay=0, jitter=0)
+
+    assert getattr(session, 'trust_env', None) is False

@@ -33,10 +33,20 @@ CREATE TABLE IF NOT EXISTS notifications (
   ts INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS tracked_products (
+  wb_id TEXT PRIMARY KEY,
+  model_key TEXT,
+  query TEXT,
+  first_seen_ts INTEGER,
+  last_seen_ts INTEGER,
+  active INTEGER DEFAULT 1
+);
+
 CREATE INDEX IF NOT EXISTS idx_price_snapshots_wb_ts ON price_snapshots(wb_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_price_snapshots_model_ts ON price_snapshots(model_key, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_wb_type_ts ON notifications(wb_id, notif_type, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_ts ON notifications(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tracked_products_model_active ON tracked_products(model_key, active);
 '''
 
 class DB:
@@ -48,6 +58,15 @@ class DB:
     def _init_db(self):
         with self.conn() as c:
             c.executescript(SCHEMA)
+            c.execute(
+                '''
+                INSERT OR IGNORE INTO tracked_products(wb_id, model_key, query, first_seen_ts, last_seen_ts, active)
+                SELECT wb_id, model_key, query, MIN(ts), MAX(ts), 1
+                FROM price_snapshots
+                WHERE wb_id IS NOT NULL AND model_key IS NOT NULL
+                GROUP BY wb_id, model_key
+                '''
+            )
 
     @contextmanager
     def conn(self):
@@ -72,6 +91,55 @@ class DB:
                 ''',
                 (wb_id, name, brand, seller),
             )
+
+    def track_product(self, wb_id, model_key, query=None, ts=None):
+        if not wb_id or not model_key:
+            return
+        ts = ts or int(time.time())
+        with self.conn() as c:
+            c.execute(
+                '''
+                INSERT INTO tracked_products(wb_id, model_key, query, first_seen_ts, last_seen_ts, active)
+                VALUES(?,?,?,?,?,1)
+                ON CONFLICT(wb_id) DO UPDATE SET
+                  model_key=excluded.model_key,
+                  query=COALESCE(excluded.query, tracked_products.query),
+                  last_seen_ts=excluded.last_seen_ts,
+                  active=1
+                ''',
+                (str(wb_id), model_key, query, ts, ts),
+            )
+
+    def tracked_products(self, model_keys=None, limit=None):
+        with self.conn() as c:
+            params = []
+            where = 'WHERE tp.active=1'
+            if model_keys:
+                placeholders = ','.join('?' for _ in model_keys)
+                where += f' AND tp.model_key IN ({placeholders})'
+                params.extend(model_keys)
+            sql = f'''
+                SELECT tp.wb_id, tp.model_key, tp.query, p.name, p.brand, p.seller
+                FROM tracked_products tp
+                LEFT JOIN products p ON p.wb_id=tp.wb_id
+                {where}
+                ORDER BY tp.last_seen_ts DESC
+            '''
+            if limit:
+                sql += ' LIMIT ?'
+                params.append(int(limit))
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    def count_tracked_products(self, model_keys=None):
+        with self.conn() as c:
+            params = []
+            where = 'WHERE active=1'
+            if model_keys:
+                placeholders = ','.join('?' for _ in model_keys)
+                where += f' AND model_key IN ({placeholders})'
+                params.extend(model_keys)
+            r = c.execute(f'SELECT COUNT(*) as cnt FROM tracked_products {where}', params).fetchone()
+            return r['cnt'] if r else 0
 
     def add_snapshot(self, wb_id, price, old_price, rating, reviews, url, model_key, query, ts=None):
         ts = ts or int(time.time())
